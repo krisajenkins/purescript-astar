@@ -15,7 +15,7 @@ import Data.Set (Set)
 import Data.Set as Set
 import Data.String as String
 import Data.Tuple (Tuple(..))
-import Debug.Trace (spy, traceAny, traceShow, traceShowA)
+import Data.Unfoldable (unfoldr)
 
 data Cell = Rock
 derive instance genericCell :: Generic Cell
@@ -50,10 +50,10 @@ initialGrid =
 
 showRow :: World -> Path -> Int -> Int -> Int -> String
 showRow world path minX maxX y =
-  String.joinWith "" (showCell <$> range minX maxX)
+  String.joinWith "" (showACell <$> range minX maxX)
   where
-    showCell :: Int -> String
-    showCell x =
+    showACell :: Int -> String
+    showACell x =
       if (Point x y) == world.start
       then "S"
       else if (Point x y) == world.end
@@ -95,6 +95,7 @@ solve world =
   initialState world.start
     # solveStep world
     # reconstructPath
+    # Set.fromFoldable
 
 solveStep :: World -> State -> State
 solveStep world state =
@@ -144,8 +145,11 @@ solveStep world state =
           # Array.filter (not (flip Set.member state.closedSet))
           # Array.filter (not (flip Map.member world.grid))
 
-reconstructPath :: State -> Set Point
-reconstructPath state = Set.fromFoldable $ Map.keys state.cameFrom
+reconstructPath :: State -> Array Point
+reconstructPath state =
+  unfoldr foo state.current
+  where foo :: Point -> Maybe (Tuple Point Point)
+        foo now = (Tuple now) <$> Map.lookup now state.cameFrom
 
 ------------------------------------------------------------
 
@@ -153,7 +157,7 @@ main :: forall e. Eff (console :: CONSOLE | e) Unit
 main = do
   let world = { grid: initialGrid
               , start: Point 1 5
-              , end: Point 18 15
+              , end: Point 18 11
               }
       path = solve world
   log (showWorld world path (Point 0 0) (Point 20 20))
