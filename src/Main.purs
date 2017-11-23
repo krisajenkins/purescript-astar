@@ -18,6 +18,7 @@ import Data.Tuple (Tuple(..))
 import Data.Unfoldable (unfoldr)
 
 data Cell = Rock
+
 derive instance genericCell :: Generic Cell
 instance showCell :: Show Cell where
   show = gShow
@@ -45,6 +46,7 @@ initialGrid =
   Map.fromFoldable $
     concat [ makeCell <$> [5] <*> range 3 10 <*> [Rock]
            , makeCell <$> [12] <*> range 5 15 <*> [Rock]
+           , makeCell <$> [8] <*> range 2 3 <*> [Rock]
            ]
   where makeCell x y cell = Tuple (Point x y) cell
 
@@ -59,9 +61,9 @@ showRow world path minX maxX y =
       else if (Point x y) == world.end
       then "E"
       else if Set.member (Point x y) path
-      then "o"
+      then "."
       else Map.lookup (Point x y) world.grid
-           # map (const "X")
+           # map (const "▒")
            # fromMaybe " "
 
 showWorld :: World -> Path -> Point -> Point -> String
