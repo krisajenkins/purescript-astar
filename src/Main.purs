@@ -59,7 +59,7 @@ showRow world path minX maxX y =
       else if (Point x y) == world.end
       then "E"
       else if Set.member (Point x y) path
-      then "*"
+      then "o"
       else Map.lookup (Point x y) world.grid
            # map (const "X")
            # fromMaybe " "
