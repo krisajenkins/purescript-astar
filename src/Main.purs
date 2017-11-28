@@ -6,14 +6,18 @@ import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (CONSOLE, log)
 import Data.Array (concat, range, sortWith)
 import Data.Array as Array
+import Data.Foldable (foldl)
 import Data.Generic (class Generic, gShow)
+import Data.Lens (Lens', over)
+import Data.Lens.Record (prop)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(Just, Nothing), fromMaybe)
 import Data.Ord (abs)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.String as String
+import Data.Symbol (SProxy(..))
 import Data.Tuple (Tuple(..))
 import Data.Unfoldable (unfoldr)
 
@@ -28,8 +32,6 @@ data Point = Point Int Int
 derive instance eqPoint :: Eq Point
 derive instance ordPoint :: Ord Point
 derive instance genericPoint :: Generic Point
-instance showPoint :: Show Point where
-  show = gShow
 
 type Grid = Map Point Cell
 
@@ -41,30 +43,17 @@ type World =
 
 ------------------------------------------------------------
 
-initialGrid :: Grid
-initialGrid =
-  Map.fromFoldable $
-    concat [ makeCell <$> [5] <*> range 3 10 <*> [Rock]
-           , makeCell <$> [12] <*> range 5 15 <*> [Rock]
-           , makeCell <$> [8] <*> range 2 3 <*> [Rock]
-           ]
-  where makeCell x y cell = Tuple (Point x y) cell
-
 showRow :: World -> Path -> Int -> Int -> Int -> String
 showRow world path minX maxX y =
-  String.joinWith "" (showACell <$> range minX maxX)
+  String.joinWith "" (showAPoint <$> range minX maxX)
   where
-    showACell :: Int -> String
-    showACell x =
-      if (Point x y) == world.start
-      then "S"
-      else if (Point x y) == world.end
-      then "E"
-      else if Set.member (Point x y) path
-      then "."
-      else Map.lookup (Point x y) world.grid
-           # map (const "▒")
-           # fromMaybe " "
+    showAPoint :: Int -> String
+    showAPoint x
+      | (Point x y) == world.start = "S"
+      | (Point x y) == world.end   = "E"
+      | Set.member (Point x y) path = "."
+      | Map.member (Point x y) world.grid = "▒"
+      | otherwise = " "
 
 showWorld :: World -> Path -> Point -> Point -> String
 showWorld world path (Point minX minY) (Point maxX maxY) =
@@ -77,8 +66,19 @@ type State =
   , closedSet :: Set Point
   , cameFrom :: Map Point Point
   , knownCost :: Map Point Int
-  , current :: Point
   }
+
+_openSet :: Lens' State (Set Point)
+_openSet = prop (SProxy :: SProxy "openSet")
+
+_closedSet :: Lens' State (Set Point)
+_closedSet = prop (SProxy :: SProxy "closedSet")
+
+_cameFrom :: Lens' State (Map Point Point)
+_cameFrom = prop (SProxy :: SProxy "cameFrom")
+
+_knownCost :: Lens' State (Map Point Int)
+_knownCost = prop (SProxy :: SProxy "knownCost")
 
 initialState :: Point -> State
 initialState start =
@@ -86,7 +86,6 @@ initialState start =
   , closedSet: Set.empty
   , cameFrom: Map.empty
   , knownCost: Map.fromFoldable [Tuple start 0]
-  , current: start
   }
 
 ------------------------------------------------------------
@@ -96,64 +95,82 @@ solve :: World -> Path
 solve world =
   initialState world.start
     # solveStep world
-    # reconstructPath
+    # reconstructPath world.end
     # Set.fromFoldable
 
 solveStep :: World -> State -> State
 solveStep world state =
-  if Set.isEmpty state.openSet
-  then state
-  else
-    case selectNext of
-         Nothing -> state
-         Just current | current == world.end -> state { current = current }
-         Just current ->
-               let newState = state { openSet = Set.union (Set.fromFoldable (neighbours current))
-                                                          (Set.delete current state.openSet)
-                                    , closedSet = Set.insert current state.closedSet
-                                    , current = current
-                                    }
-                   reducer :: State -> Point -> State
-                   reducer s item =
-                     case Map.lookup current s.knownCost of
-                       Nothing -> s { openSet = Set.empty }
-                       Just gScore -> case Map.lookup item s.knownCost of
-                                        Just oldScore | oldScore <= gScore + 1 -> s
-                                        _ ->  s { cameFrom = Map.insert item current s.cameFrom
-                                                , knownCost = Map.insert item (gScore + 1) s.knownCost
-                                                }
-               in solveStep world $ Array.foldl reducer newState (neighbours current)
-  where selectNext :: Maybe Point
-        selectNext = state.openSet
-                     # Array.fromFoldable
-                     # sortWith score
-                     # Array.head
+  case selectNext state.openSet of
+    Nothing -> state
+    Just current | current == world.end -> state
+    Just current ->
+      let next = validNeighbours current
 
-        score :: Point -> Maybe Int
-        score point = (+) <$> Map.lookup point state.knownCost <*> Just (heuristicScore point)
+          newState = state
+                        # over _openSet   (Set.delete current)
+                        # over _closedSet (Set.insert current)
+                        # over _openSet   (Set.union next)
 
-        heuristicScore :: Point -> Int
-        heuristicScore (Point px py) =
-           let (Point wx wy) = world.end
-           in abs (px - wx) + abs (py - wy)
+          reducer :: State -> Point -> State
+          reducer s item =
+            let currentScore = fromMaybe 0 (Map.lookup current s.knownCost)
+                thisScore = currentScore + 1
+            in case Map.lookup item s.knownCost of
+                 Just oldScore | oldScore <= thisScore -> s
+                 _ -> s
+                        # over _cameFrom  (Map.insert item current)
+                        # over _knownCost (Map.insert item thisScore)
+      in solveStep world $ foldl reducer newState next
+  where
+    selectNext :: Set Point -> Maybe Point
+    selectNext =
+      Array.fromFoldable
+        >>> sortWith score
+        >>> Array.head
 
-        neighbours :: Point -> Array Point
-        neighbours (Point x y) =
-            [ Point (x - 1) y
-            , Point (x + 1) y
-            , Point x (y - 1)
-            , Point x (y + 1)
-            ]
-          # Array.filter (not (flip Set.member state.closedSet))
-          # Array.filter (not (flip Map.member world.grid))
+    score :: Point -> Maybe Int
+    score point = do
+      knownCost <- Map.lookup point state.knownCost
+      heuristicCost <- Just $ heuristicScore point world.end
+      pure $ knownCost + heuristicCost
 
-reconstructPath :: State -> Array Point
-reconstructPath state =
-  unfoldr foo state.current
-  where foo :: Point -> Maybe (Tuple Point Point)
-        foo now = (Tuple now) <$> Map.lookup now state.cameFrom
+    validNeighbours :: Point -> Set Point
+    validNeighbours =
+        neighbours
+          >>> Array.filter (do inClosed <- flip Set.member state.closedSet
+                               inGrid   <- flip Map.member world.grid
+                               pure $ not (inClosed || inGrid))
+          >>> Set.fromFoldable
+
+neighbours :: Point -> Array Point
+neighbours (Point x y) =
+  [ Point (x - 1) y
+  , Point (x + 1) y
+  , Point x (y - 1)
+  , Point x (y + 1)
+  ]
+
+heuristicScore :: Point -> Point -> Int
+heuristicScore (Point ax ay) (Point bx by) =
+  abs (bx - ax) + abs (by - ay)
+
+reconstructPath :: Point -> State -> Array Point
+reconstructPath end state =
+  unfoldr step end
+  where
+    step :: Point -> Maybe (Tuple Point Point)
+    step now = Tuple now <$> Map.lookup now state.cameFrom
 
 ------------------------------------------------------------
+
+initialGrid :: Grid
+initialGrid =
+  Map.fromFoldable $
+    concat [ makeCell <$> [5]  <*> range 3 10 <*> [Rock]
+           , makeCell <$> [12] <*> range 5 15 <*> [Rock]
+           , makeCell <$> [8]  <*> range 2 3  <*> [Rock]
+           ]
+  where makeCell x y cell = Tuple (Point x y) cell
 
 main :: forall e. Eff (console :: CONSOLE | e) Unit
 main = do
